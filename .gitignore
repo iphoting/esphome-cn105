@@ -1,0 +1,5 @@
+# Gitignore settings for ESPHome
+/.esphome/
+/secrets.yaml
+# Large auto-named technical PDFs
+Sb*.pdf

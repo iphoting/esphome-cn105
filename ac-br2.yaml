@@ -1,0 +1,326 @@
+# =============================================================================
+# ESPHome config for Mitsubishi MSXY-FP10VG via M5Stack NanoC6
+# Based on: https://github.com/echavet/MitsubishiCN105ESPHome/discussions/340
+# Wiring (Grove port on NanoC6 → CN105 on indoor unit):
+#   Pin 1 (Yellow / IO2) → CN105 Pin 4 (TX from unit, RX for ESP)
+#   Pin 2 (White / IO1)  → CN105 Pin 5 (RX into unit, TX from ESP)
+#   Pin 3 (Red  / 5V)    → CN105 Pin 1 (12V via unit regulator → 5V rail)
+#   Pin 4 (Black / GND)  → CN105 Pin 2 (GND)
+#   CN105 Pin 3 (3.3V)   → not connected (NanoC6 is self-powered from 5V)
+#
+# NOTE: The NanoC6 GPIO pins are 3.3 V logic; the CN105 data lines are
+# 5 V tolerant in practice (many users run without a level shifter and
+# report no issues). If you want to be safe, add a bi-directional level
+# shifter between GPIO1/GPIO2 and CN105 pins 4/5.
+#
+# Secrets required in secrets.yaml:
+#   wifi_ssid, wifi_password, wifi_fallback_password
+#   encryption_key   (generate with: esphome generate-key)
+#   ota_password
+#   thread_tlv       (only if you switch to OpenThread later)
+# =============================================================================
+
+substitutions:
+  name: ac-br2
+  friendly_name: BR2 AC  # human-readable label in HA
+  # Point this at whichever HA temperature sensor you want the AC
+  # to track as the "room" temperature (replaces internal thermistor).
+  # Leave blank ("") to disable remote temperature entirely.
+  remote_temp_sensor: sensor.br2_temperature_mean
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  on_boot:
+    priority: 200
+    then:
+      # Turn off the status LED after 30 s so it doesn't distract
+      - delay: 30s
+      - light.turn_off:
+          id: rgb_led
+
+esp32:
+  board: esp32-c6-devkitc-1
+  flash_size: 4MB
+  framework:
+    type: esp-idf   # required for OpenThread; also more stable on C6
+
+# ---------------------------------------------------------------------------
+# Logging
+# Reduce verbosity for production. Set CN105Climate to DEBUG when
+# troubleshooting the initial handshake.
+# ---------------------------------------------------------------------------
+logger:
+  level: INFO
+  logs:
+    CN105Climate: WARN
+    climate: WARN
+    sensor: WARN
+    WRITE: WARN
+    READ: WARN
+
+# ---------------------------------------------------------------------------
+# Home Assistant API
+# ---------------------------------------------------------------------------
+api:
+  encryption:
+    key: !secret encryption_key
+
+# ---------------------------------------------------------------------------
+# OTA updates
+# ---------------------------------------------------------------------------
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+# ---------------------------------------------------------------------------
+# Networking — WiFi (default)
+# To switch to OpenThread / Thread instead:
+#   1. Comment out the wifi: and captive_portal: blocks
+#   2. Uncomment the network: and openthread: blocks below
+# ---------------------------------------------------------------------------
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  # Fallback hotspot so you can always reach the device if WiFi changes
+  ap:
+    ssid: "${friendly_name} Fallback"
+    password: !secret wifi_fallback_password
+
+captive_portal:
+
+# -- OpenThread (uncomment to use Thread instead of WiFi) --
+# network:
+#   enable_ipv6: true
+#
+# openthread:
+#   tlv: !secret thread_tlv
+#   # device_type: FTD   # uncomment to act as a Full Thread Device (router)
+
+# ---------------------------------------------------------------------------
+# UART — CN105 serial bus
+# Pull-up on RX is required for reliable operation on newer ESPHome
+# (see: https://github.com/echavet/MitsubishiCN105ESPHome/issues/396)
+# ---------------------------------------------------------------------------
+uart:
+  id: HP_UART
+  baud_rate: 2400
+  tx_pin: GPIO1
+  rx_pin:
+    number: GPIO2
+    mode:
+      input: true
+      pullup: true   # critical fix for ESPHome 2025.x on NanoC6
+
+# ---------------------------------------------------------------------------
+# MitsubishiCN105ESPHome component
+# ---------------------------------------------------------------------------
+external_components:
+  - source: github://echavet/MitsubishiCN105ESPHome
+
+# ---------------------------------------------------------------------------
+# Climate entity
+# ---------------------------------------------------------------------------
+climate:
+  - platform: cn105
+    id: hp
+    uart_id: HP_UART
+    name: ${friendly_name}
+    icon: mdi:air-conditioner
+    visual:
+      min_temperature: 16
+      max_temperature: 30
+      temperature_step:
+        target_temperature: 1.0   # CN105 protocol only accepts whole-degree setpoints
+        current_temperature: 0.1  # display resolution for current temp sensor
+
+    # Remote temperature: the ESP forwards a HA sensor reading to the unit
+    # so the AC uses that value instead of its own thermistor.
+    # If remote_temp_sensor substitution is empty, comment this out.
+    remote_temperature_timeout: 10min
+    debounce_delay: 100ms
+    update_interval: 4s
+
+    supports:
+      mode: ["COOL", "DRY", "FAN_ONLY"]
+      fan_mode: ["AUTO", "QUIET", "LOW", "MEDIUM", "HIGH"]
+      swing_mode: ["OFF", "VERTICAL"]
+
+    # -- Diagnostic / optional sensors --
+    # compressor_frequency and sub-mode sensors may return no data on the
+    # MSXY-FP10VG (wall-mount only unit). They are disabled by default so
+    # they won't clutter your HA dashboard but can be enabled for testing.
+
+    compressor_frequency_sensor:
+      name: "${name} Compressor Frequency"
+      entity_category: diagnostic
+      disabled_by_default: true
+
+    vertical_vane_select:
+      name: "${name} Vertical Vane"
+      disabled_by_default: false   # useful for directing airflow
+
+    stage_sensor:
+      name: "${name} Stage"
+      entity_category: diagnostic
+      disabled_by_default: false
+
+    sub_mode_sensor:
+      name: "${name} Sub Mode"
+      entity_category: diagnostic
+      disabled_by_default: false
+
+    auto_sub_mode_sensor:
+      name: "${name} Auto Sub Mode"
+      entity_category: diagnostic
+      disabled_by_default: false
+
+# ---------------------------------------------------------------------------
+# Remote temperature sensor (bridged from HA)
+# internal: false  → the value IS sent back to HA (so you can see it)
+# disabled_by_default: true → entity exists but is hidden until enabled
+# ---------------------------------------------------------------------------
+sensor:
+  - platform: homeassistant
+    name: "Remote Temperature"
+    entity_id: ${remote_temp_sensor}
+    internal: false
+    disabled_by_default: true
+    device_class: temperature
+    state_class: measurement
+    unit_of_measurement: "°C"
+    filters:
+      - clamp:
+          min_value: 1
+          max_value: 40
+          ignore_out_of_range: true
+      - throttle: 30s
+    on_value:
+      then:
+        - logger.log:
+            level: WARN
+            format: "Remote temp from HA: %.1f °C"
+            args: ['x']
+        - lambda: 'id(hp).set_remote_temperature(x);'
+
+  - platform: uptime
+    name: Uptime
+    id: sys_uptime
+    update_interval: 60s
+
+  - platform: internal_temperature
+    name: "ESP Internal Temperature"
+    id: sys_esp_temperature
+    # NanoC6 running Thread can reach ~60-70 °C — this is normal per Espressif
+    # datasheet (rated to 105 °C ambient). WiFi-only is typically ~45-55 °C.
+
+  - platform: wifi_signal
+    name: "WiFi Signal"
+    update_interval: 60s
+
+# ---------------------------------------------------------------------------
+# Onboard RGB LED (WS2812 on GPIO20, powered via GPIO19)
+# Turns on at boot (white) then off after 30 s (see on_boot above)
+# ---------------------------------------------------------------------------
+light:
+  - platform: esp32_rmt_led_strip
+    rgb_order: GRB
+    pin: GPIO20
+    num_leds: 1
+    chipset: WS2812
+    is_rgbw: true
+    restore_mode: ALWAYS_ON
+    id: rgb_led
+    name: "Status LED"
+    icon: "mdi:led-outline"
+    power_supply: rgbpwr
+    effects:
+      - random:
+      - flicker:
+      - addressable_rainbow:
+
+power_supply:
+  - id: rgbpwr
+    enable_on_boot: true
+    pin: GPIO19
+    enable_time: 10ms
+    keep_on_time: 10ms
+
+# ---------------------------------------------------------------------------
+# Onboard GPIO switch (user LED on GPIO7)
+# ---------------------------------------------------------------------------
+switch:
+  - platform: gpio
+    pin: GPIO7
+    name: "Onboard LED"
+
+# ---------------------------------------------------------------------------
+# Binary sensors
+# ---------------------------------------------------------------------------
+binary_sensor:
+  - platform: status
+    name: Online
+    id: ha_connected
+
+  - platform: gpio
+    name: "Button"
+    entity_category: diagnostic
+    pin:
+      number: GPIO9
+      inverted: true
+      mode:
+        input: true
+        pullup: true
+    filters:
+      - delayed_off: 10ms
+    on_press:
+      then:
+        - logger.log: "Onboard button pressed"
+
+# ---------------------------------------------------------------------------
+# Utility buttons
+# ---------------------------------------------------------------------------
+button:
+  - platform: restart
+    icon: mdi:power-cycle
+    name: "Reboot"
+
+# ---------------------------------------------------------------------------
+# Text sensors
+# ---------------------------------------------------------------------------
+text_sensor:
+  - platform: version
+    name: ESPHome Version
+    hide_timestamp: true
+    disabled_by_default: false
+    icon: mdi:new-box
+    entity_category: diagnostic
+
+  # WiFi diagnostics (comment out if using OpenThread)
+  - platform: wifi_info
+    ip_address:
+      name: "IP Address"
+    mac_address:
+      name: "MAC Address"
+    ssid:
+      name: "Connected SSID"
+
+  # OpenThread diagnostics (uncomment if using Thread)
+  # - platform: openthread_info
+  #   ip_address:
+  #     name: "Thread IP Address"
+  #   channel:
+  #     name: "Channel"
+  #   role:
+  #     name: "Device Role"
+  #   network_name:
+  #     name: "Network Name"
+  #   pan_id:
+  #     name: "PAN ID"
+
+# ---------------------------------------------------------------------------
+# Time sync from HA
+# ---------------------------------------------------------------------------
+time:
+  - platform: homeassistant
+    id: homeassistant_time

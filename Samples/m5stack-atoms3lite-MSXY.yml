@@ -1,0 +1,91 @@
+# M5Stack AtomS3 Lite MSXY
+substitutions:
+  name: sgac02
+  friendly_name: SGAC02 HA ESP32
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+esp32:
+  board: esp32-s3-devkitc-1
+  #board: m5stack-cores3
+  #variant: ESP32S3
+  framework:
+    #type: arduino
+    type: esp-idf
+    version: recommended
+  flash_size: 8MB
+uart:
+  id: HP_UART
+  baud_rate: 2400
+  tx_pin: GPIO1
+  rx_pin: GPIO2
+  debug:
+    direction: BOTH
+# Default logging level
+logger:
+  level: INFO
+external_components:
+  - source: github://echavet/MitsubishiCN105ESPHome
+api:
+  encryption:
+    key: "key"
+ota:
+  - platform: esphome
+    password: "Password"
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "My-Room-Atom-S3-Lite"
+    password: !secret wifi_password
+captive_portal:
+web_server:
+  port: 80
+# Sync time with Home Assistant.
+time:
+  - platform: homeassistant
+    id: homeassistant_time
+# Climate entity configuration
+climate:
+  - platform: cn105
+    name: ${friendly_name}
+    icon: mdi:heat-pump
+    compressor_frequency_sensor:
+      name: ${name} Compressor Frequency
+    vertical_vane_select:
+      name: ${name} Vertical Vane
+    horizontal_vane_select:
+      name: ${name} Horizontal Vane
+    debounce_delay : 500ms
+    update_interval: 4s  # update interval can be adjusted after a first run and logs monitoring* 
+# Sensors with general information.
+sensor:
+  # Uptime sensor.
+  - platform: uptime
+    name: "Uptime"
+    disabled_by_default: false
+    force_update: false
+    unit_of_measurement: s
+    icon: mdi:timer-outline
+    accuracy_decimals: 0
+    device_class: duration
+    state_class: total_increasing
+    entity_category: diagnostic
+    update_interval: 60s
+  - platform: internal_temperature
+    name: Internal Esp temperature
+    entity_category: diagnostic
+  - platform: wifi_signal # Reports the WiFi signal strength/RSSI in dB
+    name: Signaal dB
+    id: wifi_signal_db
+    update_interval: 60s
+    entity_category: diagnostic
+  - platform: copy # Reports the WiFi signal strength in %
+    source_id: wifi_signal_db
+    name: Signaal %
+    filters:
+      - lambda: return min(max(2 * (x + 100.0), 0.0), 100.0);
+    unit_of_measurement: " %"
+    entity_category: diagnostic
+    device_class: ""
