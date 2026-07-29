@@ -30,6 +30,15 @@ GPIO2 RX pin requires `pullup: true` for reliable operation on ESPHome 2025.x.
 | `ac-lr.yaml`  | ac-lr  | Living Room | `sensor.lr_temperature_sensor_mean` |
 | `ac-mb.yaml`  | ac-mb  | Master Bedroom | `sensor.mb_temperature_sensor_mean` |
 
+## Coil-dry ("gym sock" smell prevention)
+
+Every unit runs a coil-dry cycle: after a COOL/DRY run wets the evaporator coil (detected via `stage_sensor` != `IDLE` and `sub_mode_sensor` != `STANDBY`, since this unit doesn't report compressor frequency — see [#57](https://github.com/echavet/MitsubishiCN105ESPHome/issues/57)), an OFF command from Home Assistant is intercepted via the climate's `on_control` trigger and the unit runs `FAN_ONLY` for `coil_dry_duration_min` minutes before actually powering off. See [#658](https://github.com/echavet/MitsubishiCN105ESPHome/issues/658).
+
+- Tune per-room duration via the `coil_dry_duration_min` substitution (default `"30"`).
+- Toggle the feature off per-room with the `<name> Coil Dry Enabled` switch in HA.
+- `<name> Coil Dry Active` / `<name> Coil Dry Remaining` diagnostic entities show cycle status.
+- Sending any new command while a dry cycle is active (e.g. turning cooling back on) immediately cancels the cycle.
+
 ## Secrets setup
 
 ```bash

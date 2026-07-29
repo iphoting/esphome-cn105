@@ -27,6 +27,30 @@ substitutions:
   # to track as the "room" temperature (replaces internal thermistor).
   # Leave blank ("") to disable remote temperature entirely.
   remote_temp_sensor: sensor.lr_temperature_sensor_mean
+  # Minutes to keep the fan running in FAN_ONLY after a wet COOL/DRY run
+  # before actually powering off ("gym sock" coil-dry prevention).
+  coil_dry_duration_min: "30"
+
+# ---------------------------------------------------------------------------
+# Globals — coil-dry ("gym sock" smell prevention) state
+# coil_dry_active / coil_dry_deadline_ms use millis() and are NOT restored
+# across a reboot: if the ESP itself restarts mid-dry-cycle, the unit may be
+# left running FAN_ONLY until manually turned off. Acceptable tradeoff here;
+# a full fix would need wall-clock deadline persistence via the time: source.
+# ---------------------------------------------------------------------------
+globals:
+  - id: coil_was_wet
+    type: bool
+    restore_value: yes
+    initial_value: 'false'
+  - id: coil_dry_active
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+  - id: coil_dry_deadline_ms
+    type: uint32_t
+    restore_value: no
+    initial_value: '0'
 
 esphome:
   name: ${name}
@@ -147,6 +171,32 @@ climate:
       fan_mode: ["AUTO", "QUIET", "LOW", "MEDIUM", "HIGH"]
       swing_mode: ["OFF", "VERTICAL"]
 
+    # -- Gym Sock Smell Prevention: coil-dry-on-off --
+    # Intercepts an OFF command after a wet COOL/DRY run and instead runs
+    # FAN_ONLY for coil_dry_duration_min minutes, so the wet evaporator coil
+    # doesn't sit stagnant and grow the musty "gym sock" biofilm smell.
+    # See: https://github.com/echavet/MitsubishiCN105ESPHome/issues/658
+    on_control:
+      - lambda: |-
+          if (id(coil_dry_active)) {
+            // A new command arrived mid-dry-cycle: honor it, abandon the cycle.
+            id(coil_dry_active) = false;
+            id(coil_dry_deadline_ms) = 0;
+            return;
+          }
+          if (!id(coil_dry_enabled).state) return;
+          if (!id(coil_was_wet)) return;
+
+          auto requested_mode = x.get_mode();
+          if (!requested_mode.has_value() || *requested_mode != climate::CLIMATE_MODE_OFF) return;
+
+          uint32_t duration_ms = (uint32_t)(${coil_dry_duration_min}) * 60000UL;
+          id(coil_dry_active) = true;
+          id(coil_dry_deadline_ms) = millis() + duration_ms;
+
+          x.set_mode(climate::CLIMATE_MODE_FAN_ONLY);
+          x.set_fan_mode(climate::CLIMATE_FAN_AUTO);
+
     # -- Diagnostic / optional sensors --
     # compressor_frequency and sub-mode sensors may return no data on the
     # MSXY-FP10VG (wall-mount only unit). They are disabled by default so
@@ -163,11 +213,26 @@ climate:
 
     stage_sensor:
       name: "${name} Stage"
+      id: hp_stage
       entity_category: diagnostic
       disabled_by_default: false
+      # Coil-dry wet detection: no compressor_frequency support on this unit
+      # (see issue #57), so use stage/sub_mode instead. Any stage other than
+      # IDLE while COOL/DRY is active (and sub_mode isn't STANDBY) means the
+      # compressor is running and the coil is getting wet.
+      on_value:
+        then:
+          - lambda: |-
+              auto mode = id(hp).mode;
+              bool wet_capable_mode = (mode == climate::CLIMATE_MODE_COOL || mode == climate::CLIMATE_MODE_DRY);
+              bool sub_mode_active = !id(hp_sub_mode).has_state() || id(hp_sub_mode).state != "STANDBY";
+              if (wet_capable_mode && x != "IDLE" && sub_mode_active) {
+                id(coil_was_wet) = true;
+              }
 
     sub_mode_sensor:
       name: "${name} Sub Mode"
+      id: hp_sub_mode
       entity_category: diagnostic
       disabled_by_default: false
 
@@ -175,6 +240,24 @@ climate:
       name: "${name} Auto Sub Mode"
       entity_category: diagnostic
       disabled_by_default: false
+
+# ---------------------------------------------------------------------------
+# Coil-dry cycle finalizer
+# Every 15s, checks whether an active dry cycle has reached its deadline and,
+# if so, issues the real OFF command and clears the wet-coil tracking state.
+# ---------------------------------------------------------------------------
+interval:
+  - interval: 15s
+    then:
+      - lambda: |-
+          if (!id(coil_dry_active)) return;
+          if (millis() < id(coil_dry_deadline_ms)) return;
+          id(coil_dry_active) = false;
+          id(coil_dry_deadline_ms) = 0;
+          id(coil_was_wet) = false;
+          auto call = id(hp).make_call();
+          call.set_mode(climate::CLIMATE_MODE_OFF);
+          call.perform();
 
 # ---------------------------------------------------------------------------
 # Remote temperature sensor (bridged from HA)
@@ -219,6 +302,20 @@ sensor:
     name: "WiFi Signal"
     update_interval: 60s
 
+  - platform: template
+    name: "${name} Coil Dry Remaining"
+    id: coil_dry_remaining_sensor
+    entity_category: diagnostic
+    icon: mdi:timer-sand
+    unit_of_measurement: min
+    update_interval: 15s
+    lambda: |-
+      if (!id(coil_dry_active)) return 0.0f;
+      uint32_t now = millis();
+      uint32_t deadline = id(coil_dry_deadline_ms);
+      if (now >= deadline) return 0.0f;
+      return (deadline - now) / 60000.0f;
+
 # ---------------------------------------------------------------------------
 # Onboard RGB LED (WS2812 on GPIO20, powered via GPIO19)
 # Turns on at boot (white) then off after 30 s (see on_boot above)
@@ -255,6 +352,14 @@ switch:
     pin: GPIO7
     name: "Onboard LED"
 
+  - platform: template
+    name: "${name} Coil Dry Enabled"
+    id: coil_dry_enabled
+    icon: mdi:water-off
+    entity_category: config
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+
 # ---------------------------------------------------------------------------
 # Binary sensors
 # ---------------------------------------------------------------------------
@@ -262,6 +367,12 @@ binary_sensor:
   - platform: status
     name: Online
     id: ha_connected
+
+  - platform: template
+    name: "${name} Coil Dry Active"
+    id: coil_dry_active_sensor
+    entity_category: diagnostic
+    lambda: return id(coil_dry_active);
 
   - platform: gpio
     name: "Button"
