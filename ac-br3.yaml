@@ -44,6 +44,7 @@ esp32:
   flash_size: 4MB
   framework:
     type: esp-idf   # required for OpenThread; also more stable on C6
+  toolchain: platformio
 
 # ---------------------------------------------------------------------------
 # Logging
