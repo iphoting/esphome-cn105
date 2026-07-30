@@ -207,6 +207,11 @@ climate:
       entity_category: diagnostic
       disabled_by_default: true
 
+    outside_air_temperature_sensor:
+      name: "${name} Outside Air Temperature"
+      entity_category: diagnostic
+      disabled_by_default: false
+
     vertical_vane_select:
       name: "${name} Vertical Vane"
       disabled_by_default: false   # useful for directing airflow
