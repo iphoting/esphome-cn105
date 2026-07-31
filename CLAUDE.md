@@ -32,8 +32,11 @@ GPIO2 RX pin requires `pullup: true` for reliable operation on ESPHome 2025.x.
 
 ## Coil-dry ("gym sock" smell prevention)
 
-Every unit runs a coil-dry cycle: after a COOL/DRY run wets the evaporator coil (detected via `stage_sensor` != `IDLE` and `sub_mode_sensor` != `STANDBY`, since this unit doesn't report compressor frequency — see [#57](https://github.com/echavet/MitsubishiCN105ESPHome/issues/57)), an OFF command from Home Assistant is intercepted via the climate's `on_control` trigger and the unit runs `FAN_ONLY` for `coil_dry_duration_min` minutes before actually powering off. See [#658](https://github.com/echavet/MitsubishiCN105ESPHome/issues/658).
+Every unit runs a coil-dry cycle: after a COOL/DRY run wets the evaporator coil (detected via `stage_sensor` != `IDLE` and `sub_mode_sensor` != `STANDBY`, since this unit doesn't report compressor frequency — see [#57](https://github.com/echavet/MitsubishiCN105ESPHome/issues/57)), an OFF command from Home Assistant is intercepted via the climate's `on_control` trigger and the unit is kept running for `coil_dry_duration_min` minutes before actually powering off. See [#658](https://github.com/echavet/MitsubishiCN105ESPHome/issues/658).
 
+- Two dry-cycle methods, selected via the `coil_dry_method` substitution:
+  - `"fan_only"` (default) — force `FAN_ONLY`. Validated on single-outdoor-unit setups (all 5 rooms here).
+  - `"cool_thermo_off"` — stay in `COOL` with the setpoint bumped to `coil_dry_target_c` (default `"30"`) instead, so a shared MXZ multi-zone outdoor unit isn't disrupted for sibling zones still calling for cooling. The real setpoint is saved before the bump and restored both when the cycle finishes normally and if a new command cancels it early. Unverified against real multi-zone hardware — see [#658 discussion](https://github.com/echavet/MitsubishiCN105ESPHome/issues/658#issuecomment-5140807883).
 - Tune per-room duration via the `coil_dry_duration_min` substitution (default `"30"`).
 - Toggle the feature off per-room with the `<name> Coil Dry Enabled` switch in HA.
 - `<name> Coil Dry Active` / `<name> Coil Dry Remaining` diagnostic entities show cycle status.

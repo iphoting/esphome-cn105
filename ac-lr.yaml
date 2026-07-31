@@ -30,6 +30,15 @@ substitutions:
   # Minutes to keep the fan running in FAN_ONLY after a wet COOL/DRY run
   # before actually powering off ("gym sock" coil-dry prevention).
   coil_dry_duration_min: "30"
+  # "fan_only" (default): force FAN_ONLY during the dry cycle. Validated on
+  # single-outdoor-unit setups.
+  # "cool_thermo_off": stay in COOL with a high setpoint instead, so a shared
+  # MXZ multi-zone outdoor unit isn't disrupted for sibling zones. Unverified
+  # against real multi-zone hardware — see echavet/MitsubishiCN105ESPHome#658.
+  coil_dry_method: "fan_only"
+  # Setpoint (°C) used during a cool_thermo_off dry cycle to keep the
+  # compressor from being called for by this zone.
+  coil_dry_target_c: "30"
 
 # ---------------------------------------------------------------------------
 # Globals — coil-dry ("gym sock" smell prevention) state
@@ -51,6 +60,10 @@ globals:
     type: uint32_t
     restore_value: no
     initial_value: '0'
+  - id: coil_dry_real_target_temp
+    type: float
+    restore_value: no
+    initial_value: '0.0'
 
 esphome:
   name: ${name}
@@ -182,6 +195,14 @@ climate:
             // A new command arrived mid-dry-cycle: honor it, abandon the cycle.
             id(coil_dry_active) = false;
             id(coil_dry_deadline_ms) = 0;
+            // cool_thermo_off left the setpoint bumped up for the dry cycle;
+            // if the new command doesn't set its own target, restore the
+            // real one so the unit doesn't come back on at the dry-cycle
+            // setpoint (see echavet/MitsubishiCN105ESPHome#658).
+            if (std::string("${coil_dry_method}") == std::string("cool_thermo_off") &&
+                !x.get_target_temperature().has_value()) {
+              x.set_target_temperature(id(coil_dry_real_target_temp));
+            }
             return;
           }
           if (!id(coil_dry_enabled).state) return;
@@ -194,8 +215,21 @@ climate:
           id(coil_dry_active) = true;
           id(coil_dry_deadline_ms) = millis() + duration_ms;
 
-          x.set_mode(climate::CLIMATE_MODE_FAN_ONLY);
-          x.set_fan_mode(climate::CLIMATE_FAN_AUTO);
+          if (std::string("${coil_dry_method}") == std::string("cool_thermo_off")) {
+            // Shared MXZ multi-zone outdoor unit: forcing FAN_ONLY on one
+            // zone can interfere with sibling zones still calling for
+            // cooling. Instead stay in COOL with a high setpoint so the
+            // indoor fan keeps moving air across the coil but this zone's
+            // compressor demand drops out.
+            id(coil_dry_real_target_temp) = id(hp).target_temperature;
+            x.set_mode(climate::CLIMATE_MODE_COOL);
+            x.set_fan_mode(climate::CLIMATE_FAN_AUTO);
+            x.set_target_temperature((float)(${coil_dry_target_c}));
+          } else {
+            // Single-zone / dedicated outdoor unit: just run the fan.
+            x.set_mode(climate::CLIMATE_MODE_FAN_ONLY);
+            x.set_fan_mode(climate::CLIMATE_FAN_AUTO);
+          }
 
     # -- Diagnostic / optional sensors --
     # compressor_frequency and sub-mode sensors may return no data on the
@@ -262,6 +296,9 @@ interval:
           id(coil_was_wet) = false;
           auto call = id(hp).make_call();
           call.set_mode(climate::CLIMATE_MODE_OFF);
+          if (std::string("${coil_dry_method}") == std::string("cool_thermo_off")) {
+            call.set_target_temperature(id(coil_dry_real_target_temp));
+          }
           call.perform();
 
 # ---------------------------------------------------------------------------
