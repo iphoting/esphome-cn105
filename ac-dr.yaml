@@ -231,6 +231,17 @@ climate:
             x.set_fan_mode(climate::CLIMATE_FAN_AUTO);
           }
 
+    # Coil-dry wet detection: fires whenever the climate publishes a new
+    # state (i.e. on every status packet). Uses the component's built-in
+    # action, which is derived from the CN105 protocol's dedicated
+    # operating-status byte — a more direct/reliable signal on this unit
+    # than compressor frequency (unsupported here, see issue #57).
+    on_state:
+      - lambda: |-
+          if (x.action == climate::CLIMATE_ACTION_COOLING || x.action == climate::CLIMATE_ACTION_DRYING) {
+            id(coil_was_wet) = true;
+          }
+
     # -- Diagnostic / optional sensors --
     # compressor_frequency and sub-mode sensors may return no data on the
     # MSXY-FP10VG (wall-mount only unit). They are disabled by default so
@@ -255,19 +266,6 @@ climate:
       id: hp_stage
       entity_category: diagnostic
       disabled_by_default: false
-      # Coil-dry wet detection: no compressor_frequency support on this unit
-      # (see issue #57), so use stage/sub_mode instead. Any stage other than
-      # IDLE while COOL/DRY is active (and sub_mode isn't STANDBY) means the
-      # compressor is running and the coil is getting wet.
-      on_value:
-        then:
-          - lambda: |-
-              auto mode = id(hp).mode;
-              bool wet_capable_mode = (mode == climate::CLIMATE_MODE_COOL || mode == climate::CLIMATE_MODE_DRY);
-              bool sub_mode_active = !id(hp_sub_mode).has_state() || id(hp_sub_mode).state != "STANDBY";
-              if (wet_capable_mode && x != "IDLE" && sub_mode_active) {
-                id(coil_was_wet) = true;
-              }
 
     sub_mode_sensor:
       name: "${name} Sub Mode"

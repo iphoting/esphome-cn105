@@ -32,7 +32,7 @@ GPIO2 RX pin requires `pullup: true` for reliable operation on ESPHome 2025.x.
 
 ## Coil-dry ("gym sock" smell prevention)
 
-Every unit runs a coil-dry cycle: after a COOL/DRY run wets the evaporator coil (detected via `stage_sensor` != `IDLE` and `sub_mode_sensor` != `STANDBY`, since this unit doesn't report compressor frequency — see [#57](https://github.com/echavet/MitsubishiCN105ESPHome/issues/57)), an OFF command from Home Assistant is intercepted via the climate's `on_control` trigger and the unit is kept running for `coil_dry_duration_min` minutes before actually powering off. See [#658](https://github.com/echavet/MitsubishiCN105ESPHome/issues/658).
+Every unit runs a coil-dry cycle: after a COOL/DRY run wets the evaporator coil (detected via the climate's `on_state` trigger checking `action == CLIMATE_ACTION_COOLING/DRYING`, which the component derives from the CN105 protocol's dedicated operating-status byte — a more direct signal on this unit than compressor frequency, which is unsupported here, see [#57](https://github.com/echavet/MitsubishiCN105ESPHome/issues/57)), an OFF command from Home Assistant is intercepted via the climate's `on_control` trigger and the unit is kept running for `coil_dry_duration_min` minutes before actually powering off. See [#658](https://github.com/echavet/MitsubishiCN105ESPHome/issues/658).
 
 - Two dry-cycle methods, selected via the `coil_dry_method` substitution:
   - `"fan_only"` (default) — force `FAN_ONLY`. Validated on single-outdoor-unit setups (all 5 rooms here).
