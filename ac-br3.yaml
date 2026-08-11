@@ -181,7 +181,7 @@ climate:
 
     supports:
       mode: ["COOL", "DRY", "FAN_ONLY"]
-      fan_mode: ["AUTO", "QUIET", "LOW", "MEDIUM", "HIGH"]
+      fan_mode: ["AUTO", "QUIET", "LOW", "MEDIUM", "MIDDLE", "HIGH"]
       swing_mode: ["OFF", "VERTICAL"]
 
     # -- Gym Sock Smell Prevention: coil-dry-on-off --
