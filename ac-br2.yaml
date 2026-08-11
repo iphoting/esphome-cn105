@@ -64,6 +64,10 @@ globals:
     type: float
     restore_value: no
     initial_value: '0.0'
+  - id: coil_dry_real_fan_mode
+    type: climate::ClimateFanMode
+    restore_value: no
+    initial_value: climate::CLIMATE_FAN_AUTO
 
 esphome:
   name: ${name}
@@ -207,6 +211,7 @@ climate:
           uint32_t duration_ms = (uint32_t)(${coil_dry_duration_min}) * 60000UL;
           id(coil_dry_active) = true;
           id(coil_dry_deadline_ms) = millis() + duration_ms;
+          id(coil_dry_real_fan_mode) = id(hp).fan_mode.value_or(climate::CLIMATE_FAN_AUTO);
 
           if (std::string("${coil_dry_method}") == std::string("cool_thermo_off")) {
             // Shared MXZ multi-zone outdoor unit: forcing FAN_ONLY on one
@@ -255,11 +260,26 @@ climate:
             if (!matches_dry_state) {
               id(coil_dry_active) = false;
               id(coil_dry_deadline_ms) = 0;
-              // Known limitation: if cool_thermo_off's setpoint is still
-              // sitting at coil_dry_target_c when abandoned (e.g. the
-              // remote changed mode but not temperature), it's left there
-              // rather than restored — acceptable given cool_thermo_off is
-              // already unverified on real multi-zone hardware.
+
+              // Restore any field that still shows the dry-cycle-forced
+              // value — that means the abandoning command didn't touch it,
+              // so it's safe to put back. A field the command DID
+              // explicitly change (e.g. the remote picking a new fan speed,
+              // or HA setting a new setpoint) is left alone rather than
+              // clobbered. Can't tell the two cases apart any other way
+              // here, since on_state only sees the resulting state, not
+              // which fields the abandoning command actually set.
+              auto restore_call = id(hp).make_call();
+              bool needs_restore = false;
+              if (x.fan_mode.value_or(climate::CLIMATE_FAN_AUTO) == climate::CLIMATE_FAN_AUTO) {
+                restore_call.set_fan_mode(id(coil_dry_real_fan_mode));
+                needs_restore = true;
+              }
+              if (cool_thermo_off && x.target_temperature == (float)(${coil_dry_target_c})) {
+                restore_call.set_target_temperature(id(coil_dry_real_target_temp));
+                needs_restore = true;
+              }
+              if (needs_restore) restore_call.perform();
             }
             return;
           }
@@ -277,6 +297,7 @@ climate:
           uint32_t duration_ms = (uint32_t)(${coil_dry_duration_min}) * 60000UL;
 
           auto call = id(hp).make_call();
+          id(coil_dry_real_fan_mode) = x.fan_mode.value_or(climate::CLIMATE_FAN_AUTO);
           if (cool_thermo_off) {
             id(coil_dry_real_target_temp) = x.target_temperature;
             call.set_mode(climate::CLIMATE_MODE_COOL);
@@ -343,6 +364,7 @@ interval:
           id(coil_was_wet) = false;
           auto call = id(hp).make_call();
           call.set_mode(climate::CLIMATE_MODE_OFF);
+          call.set_fan_mode(id(coil_dry_real_fan_mode));
           if (std::string("${coil_dry_method}") == std::string("cool_thermo_off")) {
             call.set_target_temperature(id(coil_dry_real_target_temp));
           }
