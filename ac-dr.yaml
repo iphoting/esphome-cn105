@@ -68,6 +68,10 @@ globals:
     type: climate::ClimateFanMode
     restore_value: no
     initial_value: climate::CLIMATE_FAN_AUTO
+  - id: coil_dry_real_mode
+    type: climate::ClimateMode
+    restore_value: no
+    initial_value: climate::CLIMATE_MODE_COOL
 
 esphome:
   name: ${name}
@@ -245,6 +249,7 @@ climate:
           // (unsupported here, see issue #57).
           if (x.action == climate::CLIMATE_ACTION_COOLING || x.action == climate::CLIMATE_ACTION_DRYING) {
             id(coil_was_wet) = true;
+            id(coil_dry_real_mode) = x.mode;  // COOL or DRY, whichever is actually driving the compressor
           }
 
           bool cool_thermo_off = std::string("${coil_dry_method}") == std::string("cool_thermo_off");
@@ -362,6 +367,19 @@ interval:
           id(coil_dry_active) = false;
           id(coil_dry_deadline_ms) = 0;
           id(coil_was_wet) = false;
+
+          // Restore the real HVAC mode first, in its own call, so the unit's
+          // own internal "last mode" memory reflects it. The OFF call below
+          // never sends a mode byte (see CN105Climate::controlMode()'s OFF
+          // case), so without this step the unit would resume, next time
+          // it's powered on from its own remote, into whatever mode the dry
+          // cycle forced instead of the room's real prior mode. This briefly
+          // reports the real mode to HA before the OFF call supersedes it a
+          // moment later — acceptable since it's automated and unwatched.
+          auto mode_restore_call = id(hp).make_call();
+          mode_restore_call.set_mode(id(coil_dry_real_mode));
+          mode_restore_call.perform();
+
           auto call = id(hp).make_call();
           call.set_mode(climate::CLIMATE_MODE_OFF);
           call.set_fan_mode(id(coil_dry_real_fan_mode));
