@@ -27,8 +27,10 @@ substitutions:
   # to track as the "room" temperature (replaces internal thermistor).
   # Leave blank ("") to disable remote temperature entirely.
   remote_temp_sensor: sensor.br2_temperature_mean
-  # Minutes to keep the fan running in FAN_ONLY after a wet COOL/DRY run
-  # before actually powering off ("gym sock" coil-dry prevention).
+  # Default minutes to keep the fan running in FAN_ONLY after a wet COOL/DRY
+  # run before actually powering off ("gym sock" coil-dry prevention). Only
+  # sets the initial value of the "${name} Coil Dry Duration" number entity
+  # below — adjust that from HA at runtime instead of editing this.
   coil_dry_duration_min: "30"
   # "fan_only" (default): force FAN_ONLY during the dry cycle. Validated on
   # single-outdoor-unit setups.
@@ -240,7 +242,7 @@ climate:
           auto requested_mode = x.get_mode();
           if (!requested_mode.has_value() || *requested_mode != climate::CLIMATE_MODE_OFF) return;
 
-          uint32_t duration_ms = (uint32_t)(${coil_dry_duration_min}) * 60000UL;
+          uint32_t duration_ms = (uint32_t)(id(coil_dry_duration_min_number).state) * 60000UL;
           id(coil_dry_active) = true;
           id(coil_dry_deadline_ms) = millis() + duration_ms;
           id(coil_dry_real_fan_mode) = id(hp).fan_mode.value_or(climate::CLIMATE_FAN_AUTO);
@@ -327,9 +329,9 @@ climate:
           // Coil is wet and the unit just went OFF without on_control
           // catching it in flight — i.e. this was the IR remote. Command
           // the unit back into the dry-cycle mode ourselves; the finalizer
-          // below will turn it off for real once coil_dry_duration_min
-          // elapses.
-          uint32_t duration_ms = (uint32_t)(${coil_dry_duration_min}) * 60000UL;
+          // below will turn it off for real once the Coil Dry Duration
+          // number elapses.
+          uint32_t duration_ms = (uint32_t)(id(coil_dry_duration_min_number).state) * 60000UL;
 
           auto call = id(hp).make_call();
           id(coil_dry_real_fan_mode) = x.fan_mode.value_or(climate::CLIMATE_FAN_AUTO);
@@ -518,6 +520,26 @@ switch:
     entity_category: config
     optimistic: true
     restore_mode: RESTORE_DEFAULT_ON
+
+# ---------------------------------------------------------------------------
+# Tuneable coil-dry duration (minutes), adjustable from HA. Starts at the
+# coil_dry_duration_min substitution's value; on_control/on_state read the
+# live value here rather than the substitution, so it can be changed without
+# reflashing.
+# ---------------------------------------------------------------------------
+number:
+  - platform: template
+    name: "${name} Coil Dry Duration"
+    id: coil_dry_duration_min_number
+    icon: mdi:timer-cog
+    entity_category: config
+    unit_of_measurement: min
+    min_value: 1
+    max_value: 120
+    step: 1
+    optimistic: true
+    restore_value: true
+    initial_value: ${coil_dry_duration_min}
 
 # ---------------------------------------------------------------------------
 # Binary sensors
