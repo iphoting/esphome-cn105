@@ -193,19 +193,47 @@ climate:
       swing_mode: ["OFF", "VERTICAL"]
 
     # -- Gym Sock Smell Prevention: coil-dry-on-off --
-    # Wet-coil latching, cycle-abandonment, and OFF interception all live in
-    # on_state below (see the comment there for why) — on_control here is
-    # kept only as a fast path that catches an HA/ESPHome-issued OFF before
-    # it's applied, so the entity's mode never flashes through OFF for the
-    # common case. The IR remote bypasses on_control entirely, which is why
-    # on_state has its own copy of this logic as the correct, complete
-    # fallback.
+    # on_control is the primary implementation: it fires synchronously within
+    # ClimateCall::perform(), before the command ever reaches the hardware,
+    # so mutating/inspecting the in-flight call here is immediate and
+    # lag-free (unlike reacting to it afterwards in on_state, which has to
+    # read back the resulting state and can race the CN105 component's
+    # debounced send — see issue #658 discussion / this repo's history for
+    # the presence-automation regression that motivated this). This only
+    # works for HA/ESPHome-issued commands — the IR remote bypasses
+    # on_control entirely — so on_state below keeps a narrow fallback for
+    # that case only.
     # See: https://github.com/echavet/MitsubishiCN105ESPHome/issues/658
     on_control:
       - lambda: |-
-          if (id(coil_dry_active)) return;  // let this command apply normally;
-                                             // on_state will notice the mismatch
-                                             // and abandon the cycle
+          if (id(coil_dry_active)) {
+            // A command arrived synchronously via perform() — from HA or an
+            // ESPHome automation — while a dry cycle was running. Abandon it
+            // here, before this call reaches the hardware, so the result is
+            // correct on the very first pass.
+            id(coil_dry_active) = false;
+            id(coil_dry_deadline_ms) = 0;
+
+            // Restore any field this call does NOT explicitly set, so e.g.
+            // an automation that only specifies mode+temperature doesn't
+            // lose the real fan speed to whatever the dry cycle forced. A
+            // field the call DOES set is left alone — untouched-field
+            // detection here is exact (get_*().has_value()), unlike
+            // on_state's IR-only fallback below which has to guess from
+            // resulting state.
+            if (!x.get_mode().has_value()) {
+              x.set_mode(id(coil_dry_real_mode));
+            }
+            if (!x.get_fan_mode().has_value()) {
+              x.set_fan_mode(id(coil_dry_real_fan_mode));
+            }
+            if (std::string("${coil_dry_method}") == std::string("cool_thermo_off")
+                && !x.get_target_temperature().has_value()) {
+              x.set_target_temperature(id(coil_dry_real_target_temp));
+            }
+            return;
+          }
+
           if (!id(coil_dry_enabled).state) return;
           if (!id(coil_was_wet)) return;
 
@@ -216,6 +244,7 @@ climate:
           id(coil_dry_active) = true;
           id(coil_dry_deadline_ms) = millis() + duration_ms;
           id(coil_dry_real_fan_mode) = id(hp).fan_mode.value_or(climate::CLIMATE_FAN_AUTO);
+          id(coil_dry_real_mode) = id(hp).mode;  // real mode, captured synchronously before it's overwritten below
 
           if (std::string("${coil_dry_method}") == std::string("cool_thermo_off")) {
             // Shared MXZ multi-zone outdoor unit: forcing FAN_ONLY on one
@@ -233,32 +262,42 @@ climate:
             x.set_fan_mode(climate::CLIMATE_FAN_AUTO);
           }
 
-    # Coil-dry wet detection + cycle management. Fires on every published
-    # state, regardless of source (HA, an ESPHome automation, or the unit's
-    # own IR remote — see issue #658 comments), unlike on_control above
-    # which only fires for HA/ESPHome-issued commands. This is therefore the
-    # single source of truth for wet-latching and cycle-abandonment, and the
-    # fallback OFF interception for anything on_control's fast path missed
-    # (i.e. the IR remote).
+    # Narrow IR-remote-only fallback for exactly what on_control cannot see:
+    # commands from the unit's own IR remote bypass ClimateCall entirely,
+    # going straight from UART status bytes to publish_state() (on_state),
+    # never through on_control. By the time on_state fires for an
+    # HA/ESPHome-issued command, on_control has already synchronously
+    # cleared coil_dry_active moments earlier in the same call stack — so
+    # the "active cycle" branch below is only ever reached for IR-remote-
+    # driven changes.
     on_state:
       - lambda: |-
-          // Latch "coil is wet" whenever the compressor is actually driven
-          // in COOL/DRY. Uses the component's built-in action, derived from
-          // the CN105 protocol's dedicated operating-status byte — a more
-          // direct/reliable signal on this unit than compressor frequency
-          // (unsupported here, see issue #57).
+          // Latch "coil is wet" and the real driving mode whenever the
+          // compressor is actually driven in COOL/DRY, regardless of
+          // source. There's no ClimateCall for this (it's a derived
+          // hardware signal, from the CN105 protocol's dedicated
+          // operating-status byte), so on_control can't see it — this must
+          // stay here. Also continuously latches the real mode: by the time
+          // a remote-issued OFF is observed below, x.mode is already OFF,
+          // so the real COOL/DRY value has to have been captured earlier,
+          // while it was still true.
           if (x.action == climate::CLIMATE_ACTION_COOLING || x.action == climate::CLIMATE_ACTION_DRYING) {
             id(coil_was_wet) = true;
-            id(coil_dry_real_mode) = x.mode;  // COOL or DRY, whichever is actually driving the compressor
+            id(coil_dry_real_mode) = x.mode;
           }
 
           bool cool_thermo_off = std::string("${coil_dry_method}") == std::string("cool_thermo_off");
 
           if (id(coil_dry_active)) {
-            // A dry cycle is running. If the reported state no longer
-            // matches what we forced it to, something else changed it (HA
-            // or the remote) — abandon the cycle instead of letting the
-            // finalizer force an unwanted OFF later.
+            // A dry cycle is running and on_control didn't already abandon
+            // it above (it clears coil_dry_active synchronously for any
+            // HA/ESPHome command, before that command's resulting state
+            // ever reaches here) — so reaching this point can only mean the
+            // IR remote changed something. Abandon the same way, restoring
+            // fields that still show the forced value: on_state has no
+            // ClimateCall to inspect for the remote's own command, so
+            // unlike on_control above, this has to guess from resulting
+            // state instead of an exact has_value() check.
             bool matches_dry_state = cool_thermo_off
                 ? (x.mode == climate::CLIMATE_MODE_COOL && x.target_temperature == (float)(${coil_dry_target_c}))
                 : (x.mode == climate::CLIMATE_MODE_FAN_ONLY);
@@ -266,14 +305,6 @@ climate:
               id(coil_dry_active) = false;
               id(coil_dry_deadline_ms) = 0;
 
-              // Restore any field that still shows the dry-cycle-forced
-              // value — that means the abandoning command didn't touch it,
-              // so it's safe to put back. A field the command DID
-              // explicitly change (e.g. the remote picking a new fan speed,
-              // or HA setting a new setpoint) is left alone rather than
-              // clobbered. Can't tell the two cases apart any other way
-              // here, since on_state only sees the resulting state, not
-              // which fields the abandoning command actually set.
               auto restore_call = id(hp).make_call();
               bool needs_restore = false;
               if (x.fan_mode.value_or(climate::CLIMATE_FAN_AUTO) == climate::CLIMATE_FAN_AUTO) {
@@ -294,11 +325,10 @@ climate:
           if (x.mode != climate::CLIMATE_MODE_OFF) return;
 
           // Coil is wet and the unit just went OFF without on_control
-          // catching it in flight — i.e. this was the IR remote (if
-          // on_control's fast path had fired, x.mode here would already be
-          // FAN_ONLY/COOL, not OFF). Command the unit back into the
-          // dry-cycle mode ourselves; the finalizer below will turn it off
-          // for real once coil_dry_duration_min elapses.
+          // catching it in flight — i.e. this was the IR remote. Command
+          // the unit back into the dry-cycle mode ourselves; the finalizer
+          // below will turn it off for real once coil_dry_duration_min
+          // elapses.
           uint32_t duration_ms = (uint32_t)(${coil_dry_duration_min}) * 60000UL;
 
           auto call = id(hp).make_call();
