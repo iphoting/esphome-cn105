@@ -1,0 +1,44 @@
+name: ESPHome config validation
+
+on:
+  push:
+    paths:
+      - "ac-*.yaml"
+      - "secrets.yaml.example"
+      - ".github/workflows/esphome-config.yml"
+  pull_request:
+    paths:
+      - "ac-*.yaml"
+      - "secrets.yaml.example"
+      - ".github/workflows/esphome-config.yml"
+
+jobs:
+  config:
+    name: esphome config
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ESPHome
+        run: pip install esphome
+
+      - name: Create dummy secrets.yaml
+        run: |
+          cp secrets.yaml.example secrets.yaml
+          # Format-only dummy key so `api.encryption.key` passes schema
+          # validation — never used to actually encrypt anything real.
+          sed -i 's/^encryption_key:.*/encryption_key: "OAwLSB1LKOs4hHG7FKkPLj\/Ue7ge+BkVPvKQTfpIEbw="/' secrets.yaml
+
+      - name: Validate every AC config
+        run: |
+          overall_status=0
+          for f in ac-*.yaml; do
+            echo "::group::esphome config $f"
+            esphome config "$f" || overall_status=1
+            echo "::endgroup::"
+          done
+          exit $overall_status
