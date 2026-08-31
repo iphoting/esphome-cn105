@@ -216,6 +216,14 @@ climate:
             id(coil_dry_active) = false;
             id(coil_dry_deadline_ms) = 0;
 
+            if (x.get_mode().has_value() && *x.get_mode() == climate::CLIMATE_MODE_OFF) {
+              // Genuinely turning off, overriding the cycle — don't let
+              // on_state's IR-fallback misread the resulting OFF state a
+              // moment later as a fresh, un-intercepted off-from-wet-coil
+              // event and start another cycle.
+              id(coil_was_wet) = false;
+            }
+
             // Restore any field this call does NOT explicitly set, so e.g.
             // an automation that only specifies mode+temperature doesn't
             // lose the real fan speed to whatever the dry cycle forced. A
@@ -306,6 +314,9 @@ climate:
             if (!matches_dry_state) {
               id(coil_dry_active) = false;
               id(coil_dry_deadline_ms) = 0;
+              if (x.mode == climate::CLIMATE_MODE_OFF) {
+                id(coil_was_wet) = false;
+              }
 
               auto restore_call = id(hp).make_call();
               bool needs_restore = false;
@@ -320,6 +331,14 @@ climate:
               if (needs_restore) restore_call.perform();
             }
             return;
+          }
+
+          if (id(coil_was_wet) && x.mode == climate::CLIMATE_MODE_FAN_ONLY) {
+            // Left COOL/DRY for Fan on its own (not via an active dry
+            // cycle, which already returned above) — the wet-coil window
+            // has closed, so a later Off from here shouldn't spawn a
+            // brand-new cycle.
+            id(coil_was_wet) = false;
           }
 
           if (!id(coil_dry_enabled).state) return;
