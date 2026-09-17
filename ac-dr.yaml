@@ -404,6 +404,14 @@ climate:
       entity_category: diagnostic
       disabled_by_default: false
 
+    # Reports whether the unit is actually honoring the remote temperature
+    # (vs having fallen back to its internal thermistor, e.g. after the
+    # remote_temperature_timeout above elapses with no fresh HA reading).
+    remote_temperature_control_sensor:
+      name: "${name} Remote Temp Active"
+      entity_category: diagnostic
+      disabled_by_default: false
+
 # ---------------------------------------------------------------------------
 # Coil-dry cycle finalizer
 # Every 15s, checks whether an active dry cycle has reached its deadline and,
